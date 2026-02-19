@@ -2,9 +2,9 @@
 
 ## 1. Install
 
-`ash
+~~~bash
 npm install -g instatunnel
-`
+~~~
 
 ## 2. Get an API key
 
@@ -14,15 +14,15 @@ Sign up and get your API key:
 
 ## 3. Run a tunnel
 
-`ash
+~~~bash
 instatunnel 3000
-`
+~~~
 
-You will receive a public URL:
+You will get a public URL:
 
-`
+~~~text
 https://your-subdomain.instatunnel.my
-`
+~~~
 
 ## 4. Share your URL
 

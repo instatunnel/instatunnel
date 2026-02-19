@@ -6,21 +6,21 @@ Your API key is sent after email verification. Keep it safe.
 
 ## Run on a different port
 
-`ash
+~~~bash
 instatunnel 8080
-`
+~~~
 
 ## Specify a subdomain
 
-`ash
+~~~bash
 instatunnel 3000 --subdomain myapp
-`
+~~~
 
 ## Show config
 
-`ash
+~~~bash
 instatunnel config show
-`
+~~~
 
 ## Reset key
 
