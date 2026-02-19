@@ -1,0 +1,23 @@
+# Go
+/bin/
+*.exe
+*.test
+*.out
+
+# Node
+node_modules/
+
+# Env / secrets
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.crt
+*.cert
+
+# Logs
+*.log
+
+# OS
+.DS_Store

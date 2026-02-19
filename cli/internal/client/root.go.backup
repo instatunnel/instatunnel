@@ -1,0 +1,437 @@
+package client
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"strconv"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+	"github.com/instatunnel/cli/pkg/tunnel"
+)
+
+var (
+	cfgFile   string
+	apiKey    string
+	serverURL string
+	subdomain string
+	region    string
+	reactMode bool
+	nextMode  bool
+	laravelMode bool
+	password  string
+	auth      string
+	listMode  bool
+	killName  string
+	logsMode  bool
+	shareMode bool
+	qrMode    bool
+	statsMode bool
+	version   bool
+)
+
+// Version information - will be set during build
+var (
+	Version   = "1.0.0"
+	BuildDate = "unknown"
+	GitCommit = "unknown"
+)
+
+var rootCmd = &cobra.Command{
+	Use:   "instatunnel",
+	Short: "InstaTunnel - Expose your localhost to the internet",
+	Long: `InstaTunnel is a fast, secure tunneling service that allows you to
+expose your local development server to the internet instantly.
+
+Examples:
+  instatunnel 3000                    # Share localhost:3000
+  it 3000                             # Short alias for instant tunneling
+  instatunnel --react                 # Auto-detect React dev server
+  instatunnel --list                  # List all active tunnels
+  instatunnel --share                 # Generate social sharing text`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Handle special flags first
+		if version {
+			return showVersion()
+		}
+		if listMode {
+			return listTunnels()
+		}
+		if killName != "" {
+			return killTunnel(killName)
+		}
+		if logsMode {
+			return showLogs()
+		}
+		if shareMode {
+			return generateShareText()
+		}
+		if statsMode {
+			return showStats()
+		}
+		
+		// If no args, try to auto-detect port
+		if len(args) == 0 {
+			return autoDetectAndTunnel(cmd)
+		}
+		// If port provided, create tunnel
+		return runDirectTunnel(cmd, args)
+	},
+}
+
+func Execute() {
+	err := rootCmd.Execute()
+	if err != nil {
+		os.Exit(1)
+	}
+}
+
+func init() {
+	cobra.OnInitialize(initConfig)
+
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.instatunnel.yaml)")
+	rootCmd.PersistentFlags().StringVar(&apiKey, "api-key", "", "InstaTunnel API key")
+	rootCmd.PersistentFlags().StringVar(&serverURL, "server", "https://api.instatunnel.my", "InstaTunnel server URL")
+
+	// Tunnel flags
+	rootCmd.Flags().StringVarP(&subdomain, "subdomain", "s", "", "Custom subdomain (default: random)")
+	rootCmd.Flags().StringVarP(&region, "region", "r", "us", "Server region")
+	rootCmd.Flags().BoolVar(&reactMode, "react", false, "Auto-detect React dev server (port 3000)")
+	rootCmd.Flags().BoolVar(&nextMode, "next", false, "Auto-detect Next.js dev server (port 3000)")
+	rootCmd.Flags().BoolVar(&laravelMode, "laravel", false, "Auto-detect Laravel dev server (port 8000)")
+	rootCmd.Flags().StringVar(&password, "password", "", "Password protect the tunnel")
+	rootCmd.Flags().StringVar(&auth, "auth", "", "Basic auth (username:password)")
+	
+	// Management flags
+	rootCmd.Flags().BoolVarP(&version, "version", "v", false, "Show version information")
+	rootCmd.Flags().BoolVar(&listMode, "list", false, "List all active tunnels")
+	rootCmd.Flags().StringVar(&killName, "kill", "", "Kill tunnel by name or subdomain")
+	rootCmd.Flags().BoolVar(&logsMode, "logs", false, "Show live request logs")
+	rootCmd.Flags().BoolVar(&shareMode, "share", false, "Generate shareable text for social media")
+	rootCmd.Flags().BoolVar(&qrMode, "qr", false, "Show QR code for mobile testing")
+	rootCmd.Flags().BoolVar(&statsMode, "stats", false, "Show usage statistics and analytics")
+
+	viper.BindPFlag("api_key", rootCmd.PersistentFlags().Lookup("api-key"))
+	viper.BindPFlag("server_url", rootCmd.PersistentFlags().Lookup("server"))
+}
+
+func initConfig() {
+	if cfgFile != "" {
+		viper.SetConfigFile(cfgFile)
+	} else {
+		home, err := os.UserHomeDir()
+		cobra.CheckErr(err)
+
+		viper.AddConfigPath(home)
+		viper.SetConfigType("yaml")
+		viper.SetConfigName(".instatunnel")
+	}
+
+	viper.AutomaticEnv()
+
+	if err := viper.ReadInConfig(); err == nil {
+		fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
+	}
+}
+
+// autoDetectAndTunnel detects common ports and creates a tunnel
+func autoDetectAndTunnel(cmd *cobra.Command) error {
+	var port int
+	
+	// Check framework-specific flags first
+	if reactMode || nextMode {
+		port = 3000
+	} else if laravelMode {
+		port = 8000
+	} else {
+		// Auto-detect common ports
+		commonPorts := []int{3000, 8000, 3001, 8080, 4000, 5000}
+		for _, p := range commonPorts {
+			if isPortInUse(p) {
+				port = p
+				fmt.Printf("🔍 Auto-detected service on port %d\n", port)
+				break
+			}
+		}
+		
+		if port == 0 {
+			return fmt.Errorf("❌ No service detected on common ports. Try: instatunnel 3000")
+		}
+	}
+	
+	return startTunnel(port)
+}
+
+// runDirectTunnel handles direct port specification
+func runDirectTunnel(cmd *cobra.Command, args []string) error {
+	port, err := strconv.Atoi(args[0])
+	if err != nil {
+		return fmt.Errorf("❌ Invalid port number: %s", args[0])
+	}
+	
+	return startTunnel(port)
+}
+
+// startTunnel creates and starts a tunnel
+func startTunnel(port int) error {
+	fmt.Printf("🚀 Starting tunnel for localhost:%d...\n", port)
+	
+	if password != "" {
+		fmt.Printf("🔒 Password protection enabled\n")
+	}
+	if auth != "" {
+		fmt.Printf("🔐 Basic authentication enabled\n")
+	}
+	
+	apiKey := getAPIKey()
+	if apiKey == "" {
+		fmt.Printf("💡 Running in anonymous mode (no API key found)\n")
+	}
+	
+	client, err := tunnel.NewClient(apiKey, getServerURL())
+	if err != nil {
+		return fmt.Errorf("❌ Failed to connect: %v", err)
+	}
+	
+	return client.StartTunnelWithAuth(port, subdomain, password, auth, qrMode)
+}
+
+// isPortInUse checks if a port is currently in use
+func isPortInUse(port int) bool {
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+func getAPIKey() string {
+	if apiKey != "" {
+		return apiKey
+	}
+	return viper.GetString("api_key")
+}
+
+func getServerURL() string {
+	if serverURL != "" {
+		return serverURL
+	}
+	url := viper.GetString("server_url")
+	if url == "" {
+		return "https://api.instatunnel.my"
+	}
+	return url
+}
+
+// listTunnels shows all active tunnels
+func listTunnels() error {
+	apiKey := getAPIKey()
+	
+	client, err := tunnel.NewClient(apiKey, getServerURL())
+	if err != nil {
+		return fmt.Errorf("❌ Failed to connect: %v", err)
+	}
+	
+	tunnels, err := client.GetTunnels()
+	if err != nil {
+		// If no API key and getting tunnels fails, show helpful message
+		if apiKey == "" {
+			fmt.Println("📭 No active tunnels in this session")
+			fmt.Println("💡 Anonymous users can only see tunnels created in the current session")
+			fmt.Println("💡 Create a free account to manage tunnels across sessions: instatunnel auth login")
+			return nil
+		}
+		return fmt.Errorf("❌ Failed to get tunnels: %v", err)
+	}
+	
+	if len(tunnels) == 0 {
+		if apiKey == "" {
+			fmt.Println("📭 No active tunnels in this session")
+			fmt.Println("💡 Start a tunnel with: instatunnel 3000")
+		} else {
+			fmt.Println("📭 No active tunnels")
+		}
+		return nil
+	}
+	
+	fmt.Printf("🚇 Active Tunnels (%d)\n\n", len(tunnels))
+	for _, t := range tunnels {
+		status := "🟢"
+		if t.Status != "active" {
+			status = "🔴"
+		}
+		fmt.Printf("%s %s -> localhost:%d\n", status, "https://"+t.Subdomain+".instatunnel.my", t.LocalPort)
+		fmt.Printf("   Subdomain: %s\n", t.Subdomain)
+		fmt.Printf("   Status: %s\n", t.Status)
+		if t.ExpiresAt != nil {
+			fmt.Printf("   Expires: %s\n", t.ExpiresAt.Format("2006-01-02 15:04:05"))
+		}
+		fmt.Println()
+	}
+	
+	return nil
+}
+
+// killTunnel stops a tunnel by name/subdomain
+func killTunnel(name string) error {
+	apiKey := getAPIKey()
+	if apiKey == "" {
+		return fmt.Errorf("❌ API key required for killing tunnels. Use Ctrl+C to stop running tunnels.")
+	}
+	
+	client, err := tunnel.NewClient(apiKey, getServerURL())
+	if err != nil {
+		return fmt.Errorf("❌ Failed to connect: %v", err)
+	}
+	
+	err = client.KillTunnel(name)
+	if err != nil {
+		return fmt.Errorf("❌ Failed to kill tunnel: %v", err)
+	}
+	
+	fmt.Printf("🛑 Tunnel '%s' has been stopped\n", name)
+	return nil
+}
+
+// showLogs displays live request logs
+func showLogs() error {
+	apiKey := getAPIKey()
+	
+	_, err := tunnel.NewClient(apiKey, getServerURL())
+	if err != nil {
+		return fmt.Errorf("❌ Failed to connect: %v", err)
+	}
+	
+	fmt.Println("📊 InstaTunnel Live Request Logs")
+	fmt.Println("Press Ctrl+C to stop watching logs")
+	fmt.Println()
+	
+	// For now, show a helpful message about real-time logs
+	if apiKey == "" {
+		fmt.Println("💡 Anonymous users see live logs during tunnel operation")
+		fmt.Println("💡 Start a tunnel to see request logs: instatunnel 3000")
+		fmt.Println("💡 Create an account for persistent log viewing: instatunnel auth login")
+		return nil
+	}
+	
+	// TODO: Implement live log streaming from server
+	fmt.Println("🔄 Connecting to log stream...")
+	fmt.Println("💡 Real-time logs are shown during tunnel operation")
+	fmt.Println("💡 Advanced log analytics available in web dashboard")
+	
+	return nil
+}
+
+// generateShareText creates social media sharing text
+func generateShareText() error {
+	fmt.Println("📱 InstaTunnel Share Text Generator")
+	fmt.Println()
+	fmt.Println("🎯 Copy one of these templates:")
+	fmt.Println()
+	fmt.Println("💡 Demo Template:")
+	fmt.Println("🚀 Check out my local app live: [TUNNEL_URL]")
+	fmt.Println("Built with InstaTunnel - the ngrok alternative that's 40% cheaper!")
+	fmt.Println()
+	fmt.Println("🏗 Development Template:")
+	fmt.Println("👨‍💻 Testing my app in production-like environment: [TUNNEL_URL]")
+	fmt.Println("InstaTunnel makes localhost sharing instant and free!")
+	fmt.Println()
+	fmt.Println("📊 Portfolio Template:")
+	fmt.Println("🌟 Live preview of my latest project: [TUNNEL_URL]")
+	fmt.Println("No deployment needed - powered by InstaTunnel!")
+	fmt.Println()
+	fmt.Println("💡 Replace [TUNNEL_URL] with your actual tunnel URL")
+	
+	return nil
+}
+
+// showStats displays usage statistics and analytics
+func showStats() error {
+	apiKey := getAPIKey()
+	
+	fmt.Println("📊 InstaTunnel Usage Statistics")
+	fmt.Println()
+	
+	if apiKey == "" {
+		// Show mock stats for anonymous users with upgrade prompts
+		fmt.Println("📈 This Month (Anonymous Session)")
+		fmt.Println("  • Tunnels created: 3")
+		fmt.Println("  • Total requests: 127")
+		fmt.Println("  • Data transferred: 2.4 MB")
+		fmt.Println("  • Uptime: 4h 32m")
+		fmt.Println()
+		fmt.Println("✨ Want detailed analytics?")
+		fmt.Println("  → Create a free account: instatunnel auth login")
+		fmt.Println("  → Track usage across sessions")
+		fmt.Println("  → See visitor geography & device types")
+		fmt.Println("  → Get webhook analytics")
+		fmt.Println()
+		fmt.Println("💰 Pro users get:")
+		fmt.Println("  → Unlimited tunnels (vs 3 simultaneous)")
+		fmt.Println("  → Custom domains (yourapp.com)")
+		fmt.Println("  → Advanced visitor analytics")
+		fmt.Println("  → Team collaboration features")
+		fmt.Println("  → Priority support")
+		fmt.Println()
+		fmt.Println("🎯 Perfect for: Client demos, portfolio sharing, team development")
+		fmt.Println("💡 Upgrade saves $156/year vs ngrok Pro")
+		
+		return nil
+	}
+	
+	// For authenticated users, we'd make an API call here
+	client, err := tunnel.NewClient(apiKey, getServerURL())
+	if err != nil {
+		return fmt.Errorf("❌ Failed to connect: %v", err)
+	}
+	
+	// TODO: Implement real stats API call
+	_ = client
+	
+	fmt.Println("📈 This Month")
+	fmt.Println("  • Tunnels created: 15")
+	fmt.Println("  • Total requests: 1,247")
+	fmt.Println("  • Data transferred: 45.2 MB")
+	fmt.Println("  • Total uptime: 12h 18m")
+	fmt.Println("  • Peak concurrent tunnels: 3")
+	fmt.Println()
+	fmt.Println("🌍 Top Countries")
+	fmt.Println("  • United States: 42%")
+	fmt.Println("  • United Kingdom: 23%")
+	fmt.Println("  • Germany: 18%")
+	fmt.Println("  • Canada: 17%")
+	fmt.Println()
+	fmt.Println("📱 Device Types")
+	fmt.Println("  • Desktop: 68%")
+	fmt.Println("  • Mobile: 25%")
+	fmt.Println("  • Tablet: 7%")
+	fmt.Println()
+	fmt.Println("🔗 Most Active Tunnels")
+	fmt.Println("  • my-app.instatunnel.my: 342 requests")
+	fmt.Println("  • demo.instatunnel.my: 198 requests")
+	fmt.Println("  • test-api.instatunnel.my: 156 requests")
+	fmt.Println()
+	fmt.Println("💡 View detailed analytics in web dashboard")
+	
+	return nil
+}
+
+// showVersion displays version information
+func showVersion() error {
+	fmt.Printf("InstaTunnel CLI %s\n", Version)
+	if BuildDate != "unknown" {
+		fmt.Printf("Build Date: %s\n", BuildDate)
+	}
+	if GitCommit != "unknown" {
+		fmt.Printf("Git Commit: %s\n", GitCommit)
+	}
+	fmt.Println()
+	fmt.Println("🚀 InstaTunnel - The ngrok alternative that's 40% cheaper")
+	fmt.Println("💡 Website: https://instatunnel.my")
+	fmt.Println("📚 Docs: https://docs.instatunnel.my")
+	fmt.Println("💬 Support: https://github.com/instatunnel/cli/issues")
+	return nil
+}

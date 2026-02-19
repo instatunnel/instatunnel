@@ -1,0 +1,602 @@
+package tunnel
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/instatunnel/cli/pkg/utils"
+)
+
+type Client struct {
+	apiKey    string
+	serverURL string
+	httpClient *http.Client
+}
+
+type Tunnel struct {
+	ID           int        `json:"id"`
+	Subdomain    string     `json:"subdomain"`
+	CustomDomain string     `json:"custom_domain,omitempty"`
+	LocalPort    int        `json:"local_port"`
+	Status       string     `json:"status"`
+	URL          string     `json:"url"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
+}
+
+type CreateTunnelRequest struct {
+	LocalPort int    `json:"local_port"`
+	Subdomain string `json:"subdomain,omitempty"`
+	Password  string `json:"password,omitempty"`
+	BasicAuth string `json:"basic_auth,omitempty"`
+	CustomDomain string `json:"custom_domain,omitempty"`
+}
+
+type RegisterRequest struct {
+	Email string `json:"email"`
+}
+
+type RegisterResponse struct {
+	APIKey string `json:"api_key"`
+	Email  string `json:"email"`
+	Plan   string `json:"plan"`
+}
+
+type TunnelRequest struct {
+	ID      string            `json:"id"`
+	Method  string            `json:"method"`
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers"`
+	Body    []byte            `json:"body,omitempty"`
+}
+
+type TunnelResponse struct {
+	ID         string            `json:"id"`
+	StatusCode int               `json:"status_code"`
+	Headers    map[string]string `json:"headers"`
+	Body       []byte            `json:"body,omitempty"`
+}
+
+func NewClient(apiKey, serverURL string) (*Client, error) {
+	return &Client{
+		apiKey:    apiKey,
+		serverURL: serverURL,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+	}, nil
+}
+
+func (c *Client) Register(email string) (string, error) {
+	req := RegisterRequest{Email: email}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := c.makeRequest("POST", "/auth/register", bytes.NewReader(body), false)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return "", fmt.Errorf("registration failed with status %d", resp.StatusCode)
+	}
+
+	var response RegisterResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return "", err
+	}
+
+	return response.APIKey, nil
+}
+
+func (c *Client) CreateTunnel(localPort int, subdomain string) (*Tunnel, error) {
+	return c.CreateTunnelWithAuth(localPort, subdomain, "", "", "")
+}
+
+func (c *Client) CreateTunnelWithAuth(localPort int, subdomain string, password string, basicAuth string, customDomain string) (*Tunnel, error) {
+	req := CreateTunnelRequest{
+		LocalPort: localPort,
+		Subdomain: subdomain,
+		Password:  password,
+		BasicAuth: basicAuth,
+		CustomDomain: customDomain,
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Use auth if we have an API key, otherwise try anonymous
+	needsAuth := c.apiKey != ""
+	resp, err := c.makeRequest("POST", "/tunnels", bytes.NewReader(body), needsAuth)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		// Read error details if available
+		var errMsg string
+		if bodyBytes, err := io.ReadAll(resp.Body); err == nil {
+			errMsg = string(bodyBytes)
+		}
+		if errMsg != "" {
+			return nil, fmt.Errorf("failed to create tunnel: %s", errMsg)
+		}
+		return nil, fmt.Errorf("failed to create tunnel with status %d", resp.StatusCode)
+	}
+
+	var tunnel Tunnel
+	if err := json.NewDecoder(resp.Body).Decode(&tunnel); err != nil {
+		return nil, err
+	}
+
+	return &tunnel, nil
+}
+
+func (c *Client) GetTunnels() ([]*Tunnel, error) {
+	resp, err := c.makeRequest("GET", "/tunnels", nil, true)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get tunnels with status %d", resp.StatusCode)
+	}
+
+	var tunnels []*Tunnel
+	if err := json.NewDecoder(resp.Body).Decode(&tunnels); err != nil {
+		return nil, err
+	}
+
+	return tunnels, nil
+}
+
+func (c *Client) KillTunnel(subdomain string) error {
+	url := fmt.Sprintf("%s/tunnels/subdomain/%s", c.serverURL, subdomain)
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to delete tunnel with status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (c *Client) StartTunnel(localPort int, subdomain string) error {
+	return c.StartTunnelWithOptions(localPort, subdomain, false)
+}
+
+func (c *Client) StartTunnelWithAuth(localPort int, subdomain string, password string, basicAuth string, customDomain string, showQR bool) error {
+	// First create the tunnel
+	tunnel, err := c.CreateTunnelWithAuth(localPort, subdomain, password, basicAuth, customDomain)
+	if err != nil {
+		return fmt.Errorf("failed to create tunnel: %w", err)
+	}
+
+	fmt.Printf("🚀 Your app is now live at %s\n", tunnel.URL)
+	
+	// Show security features
+	if password != "" {
+		fmt.Printf("🔒 Password protected (visitors need password to access)\n")
+	}
+	if basicAuth != "" {
+		fmt.Printf("🔐 Basic auth enabled (username/password required)\n")
+	}
+	
+	// Try to copy to clipboard
+	if utils.TryCopyToClipboard(tunnel.URL) {
+		fmt.Printf("📋 URL copied to clipboard!\n")
+	}
+	
+	fmt.Printf("🔗 Forwarding %s -> localhost:%d\n", tunnel.URL, localPort)
+	
+	if c.apiKey == "" {
+		fmt.Printf("💡 Anonymous session - this tunnel will expire in 24 hours\n")
+		fmt.Printf("💡 Create a free account to get custom subdomains and longer sessions\n")
+	}
+	
+	// Show QR code if requested
+	if showQR {
+		fmt.Println()
+		utils.ShowQRCode(tunnel.URL)
+	}
+	
+	fmt.Printf("n⚡ Ready to receive requests! Press Ctrl+C to stop\n\n")
+
+	// Connect WebSocket for tunnel traffic
+	wsURL := c.getWebSocketURL(tunnel.ID)
+	return c.connectWebSocket(wsURL, localPort)
+}
+
+func (c *Client) StartTunnelWithOptions(localPort int, subdomain string, showQR bool) error {
+	// First create the tunnel
+	tunnel, err := c.CreateTunnel(localPort, subdomain)
+	if err != nil {
+		return fmt.Errorf("failed to create tunnel: %w", err)
+	}
+
+	fmt.Printf("🚀 Your app is now live at %sn", tunnel.URL)
+	
+	// Try to copy to clipboard
+	if utils.TryCopyToClipboard(tunnel.URL) {
+		fmt.Printf("📋 URL copied to clipboard!n")
+	}
+	
+	fmt.Printf("🔗 Forwarding %s -> localhost:%dn", tunnel.URL, localPort)
+	
+	if c.apiKey == "" {
+		fmt.Printf("💡 Anonymous session - this tunnel will expire in 24 hoursn")
+		fmt.Printf("💡 Create a free account to get custom subdomains and longer sessionsn")
+	}
+	
+	// Show QR code if requested
+	if showQR {
+		fmt.Println()
+		utils.ShowQRCode(tunnel.URL)
+	}
+	
+	fmt.Printf("n⚡ Ready to receive requests! Press Ctrl+C to stopnn")
+
+	// Connect WebSocket for tunnel traffic
+	wsURL := c.getWebSocketURL(tunnel.ID)
+	return c.connectWebSocket(wsURL, localPort)
+}
+
+func (c *Client) connectWebSocket(wsURL string, localPort int) error {
+	maxRetries := 5
+	retryDelay := time.Second
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			fmt.Printf("Reconnecting... (attempt %d/%d)n", attempt+1, maxRetries)
+			time.Sleep(retryDelay)
+			retryDelay *= 2 // Exponential backoff
+		}
+
+		err := c.maintainWebSocketConnection(wsURL, localPort)
+		if err != nil {
+			fmt.Printf("Connection lost: %vn", err)
+			if attempt < maxRetries-1 {
+				continue
+			}
+			return fmt.Errorf("failed to maintain connection after %d attempts: %w", maxRetries, err)
+		}
+		return nil
+	}
+	return fmt.Errorf("max retries exceeded")
+}
+
+func (c *Client) maintainWebSocketConnection(wsURL string, localPort int) error {
+	headers := http.Header{}
+	if c.apiKey != "" {
+		headers.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		return fmt.Errorf("failed to connect WebSocket: %w", err)
+	}
+	defer conn.Close()
+
+	// Mutex to protect WebSocket writes from concurrent access
+	var writeMutex sync.Mutex
+	
+	// Helper function for safe WebSocket writes
+	writeJSON := func(v interface{}) error {
+		writeMutex.Lock()
+		defer writeMutex.Unlock()
+		return conn.WriteJSON(v)
+	}
+	
+	// Helper function for safe WebSocket ping
+	writePing := func() error {
+		writeMutex.Lock()
+		defer writeMutex.Unlock()
+		return conn.WriteMessage(websocket.PingMessage, []byte{})
+	}
+
+	// Set up ping/pong to detect connection issues
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	// Start ping routine
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
+
+	// Request counter for live analytics
+	requestCount := 0
+	startTime := time.Now()
+
+	done := make(chan struct{})
+
+	// Handle WebSocket messages
+	go func() {
+		defer close(done)
+		for {
+			var msg map[string]interface{}
+			err := conn.ReadJSON(&msg)
+			if err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					fmt.Printf("WebSocket read error: %vn", err)
+				}
+				return
+			}
+
+			msgType, ok := msg["type"].(string)
+			if !ok {
+				continue
+			}
+
+			switch msgType {
+			case "connected":
+				fmt.Println("✓ Tunnel connected and ready to receive traffic")
+			case "request":
+				requestCount++
+				// Show request counter periodically
+				if requestCount%10 == 0 || requestCount <= 5 {
+					uptime := time.Since(startTime).Round(time.Second)
+					fmt.Printf("📊 Requests: %d | Uptime: %sn", requestCount, uptime)
+				}
+				// Handle incoming HTTP request
+				go c.handleTunnelRequestSafe(writeJSON, msg["data"], localPort)
+			case "ping":
+				// Respond to ping
+				writeJSON(map[string]interface{}{
+					"type": "pong",
+				})
+			}
+		}
+	}()
+
+	// Handle pings and connection monitoring
+	for {
+		select {
+		case <-done:
+			uptime := time.Since(startTime).Round(time.Second)
+			fmt.Printf("n📊 Session Summary: %d requests handled in %sn", requestCount, uptime)
+			return fmt.Errorf("connection closed")
+		case <-pingTicker.C:
+			if err := writePing(); err != nil {
+				return fmt.Errorf("ping failed: %w", err)
+			}
+		}
+	}
+}
+
+func (c *Client) handleTunnelRequestSafe(writeJSON func(interface{}) error, data interface{}, localPort int) {
+	// Parse request data
+	dataBytes, err := json.Marshal(data)
+	if err != nil {
+		fmt.Printf("Error marshaling request data: %vn", err)
+		return
+	}
+
+	var tunnelReq TunnelRequest
+	if err := json.Unmarshal(dataBytes, &tunnelReq); err != nil {
+		fmt.Printf("Error parsing tunnel request: %vn", err)
+		return
+	}
+
+	fmt.Printf("→ %s %s", tunnelReq.Method, tunnelReq.URL)
+
+	// Forward request to local server
+	localURL := fmt.Sprintf("http://localhost:%d%s", localPort, tunnelReq.URL)
+	
+	// Create HTTP request to local server
+	var body io.Reader
+	if len(tunnelReq.Body) > 0 {
+		body = bytes.NewReader(tunnelReq.Body)
+	}
+
+	localReq, err := http.NewRequest(tunnelReq.Method, localURL, body)
+	if err != nil {
+		c.sendErrorResponseSafe(writeJSON, tunnelReq.ID, fmt.Sprintf("Failed to create request: %v", err))
+		return
+	}
+
+	// Copy headers
+	for key, value := range tunnelReq.Headers {
+		localReq.Header.Set(key, value)
+	}
+
+	// Make request to local server
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(localReq)
+	if err != nil {
+		c.sendErrorResponseSafe(writeJSON, tunnelReq.ID, fmt.Sprintf("Failed to reach local server: %v", err))
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.sendErrorResponseSafe(writeJSON, tunnelReq.ID, fmt.Sprintf("Failed to read response: %v", err))
+		return
+	}
+
+	// Copy response headers
+	headers := make(map[string]string)
+	for key, values := range resp.Header {
+		if len(values) > 0 {
+			headers[key] = values[0]
+		}
+	}
+
+	// Send response back through WebSocket
+	response := TunnelResponse{
+		ID:         tunnelReq.ID,
+		StatusCode: resp.StatusCode,
+		Headers:    headers,
+		Body:       respBody,
+	}
+
+	err = writeJSON(map[string]interface{}{
+		"type": "response",
+		"data": response,
+	})
+	if err != nil {
+		fmt.Printf("Error sending response: %vn", err)
+	}
+
+	// Color code the response based on status
+	var statusEmoji string
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		statusEmoji = " ✅"
+	} else if resp.StatusCode >= 400 {
+		statusEmoji = " ❌"
+	} else {
+		statusEmoji = " ⚠️"
+	}
+	
+	fmt.Printf("%s %d %s (%d bytes)n", statusEmoji, resp.StatusCode, http.StatusText(resp.StatusCode), len(respBody))
+}
+
+func (c *Client) sendErrorResponse(conn *websocket.Conn, requestID, errorMsg string) {
+	fmt.Printf("✗ Error: %sn", errorMsg)
+	
+	response := TunnelResponse{
+		ID:         requestID,
+		StatusCode: 502,
+		Headers:    map[string]string{"Content-Type": "text/plain"},
+		Body:       []byte(errorMsg),
+	}
+
+	conn.WriteJSON(map[string]interface{}{
+		"type": "response",
+		"data": response,
+	})
+}
+
+func (c *Client) sendErrorResponseSafe(writeJSON func(interface{}) error, requestID, errorMsg string) {
+	fmt.Printf("✗ Error: %sn", errorMsg)
+	
+	response := TunnelResponse{
+		ID:         requestID,
+		StatusCode: 502,
+		Headers:    map[string]string{"Content-Type": "text/plain"},
+		Body:       []byte(errorMsg),
+	}
+
+	writeJSON(map[string]interface{}{
+		"type": "response",
+		"data": response,
+	})
+}
+
+func (c *Client) makeRequest(method, path string, body io.Reader, auth bool) (*http.Response, error) {
+	url := c.serverURL + path
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if auth && c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	return c.httpClient.Do(req)
+}
+
+func (c *Client) getWebSocketURL(tunnelID int) string {
+	u, _ := url.Parse(c.serverURL)
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	} else {
+		u.Scheme = "ws"
+	}
+	u.Path = fmt.Sprintf("/tunnels/%d/connect", tunnelID)
+	return u.String()
+}
+// ConnectToExistingTunnel connects to an existing tunnel by subdomain
+func (c *Client) ConnectToExistingTunnel(subdomain string, localPort int) error {
+	// First check if tunnel exists
+	exists, err := c.CheckTunnelExistsBySubdomain(subdomain)
+	if err != nil {
+		return fmt.Errorf("failed to check tunnel existence: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("tunnel with subdomain %s not found", subdomain)
+	}
+
+	fmt.Printf("Connecting to existing tunnel: %s.instatunnel.my\n", subdomain)
+	fmt.Printf("Forwarding to localhost:%d\n", localPort)
+
+	// Connect via WebSocket using subdomain
+	wsURL := c.getWebSocketURLBySubdomain(subdomain)
+	return c.connectWebSocket(wsURL, localPort)
+}
+
+// CheckTunnelExistsBySubdomain checks if a tunnel exists by subdomain
+func (c *Client) CheckTunnelExistsBySubdomain(subdomain string) (bool, error) {
+	url := fmt.Sprintf("%s/tunnels/subdomain/%s/exists", c.serverURL, subdomain)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return false, err
+	}
+
+	// Add auth headers if available
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 404 {
+		return false, nil
+	}
+	
+	if resp.StatusCode == 200 {
+		var result map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
+			if exists, ok := result["exists"].(bool); ok {
+				return exists, nil
+			}
+		}
+		return true, nil
+	}
+
+	return false, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+}
+
+// getWebSocketURLBySubdomain returns the WebSocket URL for connecting to a tunnel by subdomain
+func (c *Client) getWebSocketURLBySubdomain(subdomain string) string {
+	u, _ := url.Parse(c.serverURL)
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	} else {
+		u.Scheme = "ws"
+	}
+	u.Path = fmt.Sprintf("/tunnels/subdomain/%s/connect", subdomain)
+	return u.String()
+}
