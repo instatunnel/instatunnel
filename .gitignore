@@ -19,6 +19,8 @@ node_modules/
 # Logs
 *.log
 
+# Temp / backups
+*.bak_*
+
 # OS
 .DS_Store
-n#

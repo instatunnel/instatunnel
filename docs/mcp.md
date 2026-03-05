@@ -1,33 +1,46 @@
 # MCP with InstaTunnel
 
-Use InstaTunnel to expose a local MCP endpoint over HTTPS for remote access.
+Use InstaTunnel to expose a local MCP server over HTTPS.
 
-## 1. Run your local MCP server
+## 1) Start your local MCP server
 
-Example local endpoint (replace with your setup):
+Example local endpoint:
 
-~~~text
+```text
 http://localhost:8787
-~~~
+```
 
-## 2. Expose the port with InstaTunnel
+## 2) Authenticate CLI
 
-~~~bash
-instatunnel 8787 --subdomain my-mcp
-~~~
+```bash
+instatunnel auth login -e you@example.com
+instatunnel auth set-key "it_your_api_key"
+```
 
-This returns a public URL like:
+## 3) Start MCP tunnel
 
-~~~text
-https://my-mcp.instatunnel.my
-~~~
+```bash
+instatunnel 8787 --mcp --transport v2 --subdomain mymcp
+```
 
-## 3. Use the public URL in your MCP config
+## 4) Configure your MCP client
 
-Point your MCP client/integration to the generated HTTPS URL and path expected by your MCP server.
+```json
+{
+  "url": "https://mymcp.instatunnel.my/mcp",
+  "headers": {
+    "Authorization": "Bearer YOUR_MCP_TOKEN"
+  }
+}
+```
+
+## v1 vs v2
+
+- `v1`: default, best compatibility for normal HTTP/webhook flows.
+- `v2`: use for streaming MCP behavior and long-lived responses.
 
 ## Security notes
 
-- Treat your MCP endpoint as sensitive.
-- Prefer authenticated endpoints.
-- Rotate API keys if exposed.
+- Treat MCP endpoints as sensitive.
+- Use bearer token auth where possible.
+- Rotate API keys/tokens if exposed.

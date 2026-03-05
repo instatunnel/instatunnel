@@ -1,79 +1,123 @@
-# InstaTunnel
+# InstaTunnel CLI
 
-Instant, secure localhost tunneling with custom subdomains, analytics, and a modern web dashboard.
+[![npm version](https://img.shields.io/npm/v/instatunnel)](https://www.npmjs.com/package/instatunnel)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
-InstaTunnel is a fast ngrok alternative for sharing local apps, webhooks, and APIs over HTTPS in seconds.
+InstaTunnel is a secure localhost tunnel service for developers who need a fast ngrok alternative for webhook testing, MCP endpoint tunneling, OAuth callback testing, and demo links.
 
-## Why InstaTunnel
+Website: https://instatunnel.my
 
-- Instant HTTPS tunnels for local apps and APIs
-- Custom subdomains on *.instatunnel.my
-- API key based auth for secure access
-- Web dashboard for tunnel management and analytics
-- Fast setup with a single CLI command
-- Works well for webhook and MCP endpoint exposure
+## Why developers use InstaTunnel
 
-## Quick start (CLI)
+- HTTPS tunnel for localhost in one command
+- Custom subdomains on `*.instatunnel.my`
+- CLI + web dashboard workflow
+- Built-in analytics and request logs
+- MCP tunnel support for AI tooling workflows
+- Better pricing for frequent webhook and API testing
 
-Install globally:
+## Install
 
-~~~bash
+```bash
 npm install -g instatunnel
-~~~
+```
 
-Sign up and get your API key:
+Verify:
 
-- https://instatunnel.my/get-started
+```bash
+instatunnel --version
+```
 
-Run a tunnel:
+Update:
 
-~~~bash
-instatunnel 3000
-~~~
+```bash
+npm install -g instatunnel@latest
+```
 
-You will get a public URL like:
+## Quick start
 
-~~~text
-https://your-subdomain.instatunnel.my
-~~~
+1. Create or recover account access:
 
-## MCP support
+```bash
+instatunnel auth login -e you@example.com
+```
 
-If your MCP server is running locally, you can expose it securely with InstaTunnel.
+2. Save your API key locally:
 
-Example:
+```bash
+instatunnel auth set-key "it_your_api_key"
+```
 
-~~~bash
-instatunnel 8787 --subdomain my-mcp
-~~~
+3. Run a localhost tunnel:
 
-Then use the generated HTTPS URL in your MCP client/server configuration.
+```bash
+instatunnel 3000 --subdomain myapp
+```
 
-See full guide: docs/mcp.md
+4. Optional: confirm saved key:
 
-## Use cases
+```bash
+instatunnel auth show-key --reveal --copy
+```
 
-- Share local web apps with teammates
-- Test webhooks (Stripe, GitHub, Slack, etc.)
-- Expose local MCP endpoints for remote AI tooling
-- Demo staging builds without deployment
+## MCP tunnel quick start
 
-## Docs
+For MCP streaming endpoints, use transport v2:
 
-- Online docs: https://instatunnel.my/docs
-- Quick start: docs/quickstart.md
-- Configuration: docs/configuration.md
-- MCP guide: docs/mcp.md
-- Troubleshooting: docs/troubleshooting.md
+```bash
+instatunnel 8787 --mcp --transport v2 --subdomain mymcp
+```
 
-## Project scope
+Use the generated URL in your MCP client config:
 
-This repository contains the InstaTunnel CLI and public documentation. The managed service, dashboard, and production infrastructure are hosted by InstaTunnel.
+```json
+{
+  "url": "https://mymcp.instatunnel.my/mcp",
+  "headers": {
+    "Authorization": "Bearer YOUR_MCP_TOKEN"
+  }
+}
+```
+
+## Common use cases
+
+- Local webhook testing for Stripe, GitHub, Shopify, Twilio, PayPal
+- OAuth callback development on localhost
+- Sharing local QA/demo builds with teammates
+- Exposing local MCP servers securely over HTTPS
+- Temporary public API endpoint for integration tests
+
+## InstaTunnel vs ngrok
+
+If you are searching for terms like `ngrok alternative`, `localhost tunnel`, `secure tunnel`, `webhook testing tool`, or `MCP tunnel`, InstaTunnel is designed for those exact workflows with a CLI-first experience and lower-cost paid plans.
+
+## Documentation
+
+- Docs hub: https://instatunnel.my/docs
+- CLI flags guide: https://instatunnel.my/docs/cli-flags
+- Webhook testing guides: https://instatunnel.my/docs/webhooks
+- MCP guide: https://instatunnel.my/docs#features-mcp-usage
+- Troubleshooting: https://instatunnel.my/docs/troubleshooting
+- Pricing: https://instatunnel.my/pricing
+- Changelog: ./CHANGELOG.md
+
+Local docs in this repo:
+
+- docs/quickstart.md
+- docs/configuration.md
+- docs/webhooks.md
+- docs/mcp.md
+- docs/troubleshooting.md
+
+## Support
+
+- Support email: support@instatunnel.my
+- GitHub issues: https://github.com/instatunnel/instatunnel/issues
+
+## Public repo scope
+
+This public repository is focused on the InstaTunnel CLI docs and user-facing setup material. Managed service infrastructure and internal platform services run in private repositories.
 
 ## License
 
-MIT License. See LICENSE.
-
-## SEO keywords
-
-ngrok alternative, localhost tunnel, reverse proxy, webhook testing, secure tunnel, custom subdomains, mcp tunnel, model context protocol tunnel, local development tunneling
+MIT. See ./LICENSE

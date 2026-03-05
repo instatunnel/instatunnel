@@ -1,29 +1,39 @@
 # Configuration
 
-## API key
+## Authentication
 
-Your API key is sent after email verification. Keep it safe.
+Set key in local config:
 
-## Run on a different port
+```bash
+instatunnel auth set-key "it_your_api_key"
+```
 
-~~~bash
-instatunnel 8080
-~~~
+Show key:
 
-## Specify a subdomain
+```bash
+instatunnel auth show-key
+instatunnel auth show-key --reveal --copy
+```
 
-~~~bash
+## Core tunnel options
+
+```bash
 instatunnel 3000 --subdomain myapp
-~~~
+instatunnel 3000 --region us
+instatunnel 3000 --password demo123
+instatunnel 3000 --auth user:pass
+```
 
-## Show config
+## MCP mode
 
-~~~bash
-instatunnel config show
-~~~
+```bash
+instatunnel 8787 --mcp --transport v2 --subdomain mymcp
+```
 
-## Reset key
+- Use v1 when you want maximum compatibility.
+- Use v2 for streaming MCP clients.
 
-Reset from the dashboard:
+## Dashboard + docs
 
-- https://dashboard.instatunnel.my
+- Dashboard: https://dashboard.instatunnel.my
+- Full CLI flags: https://instatunnel.my/docs/cli-flags

@@ -2,21 +2,42 @@
 
 ## Invalid API key
 
-Make sure the key starts with it_ and is copied exactly. You can reissue keys from:
+- Ensure key starts with `it_`.
+- Re-copy key without extra spaces.
+- Re-set key:
 
-- https://dashboard.instatunnel.my
+```bash
+instatunnel auth set-key "it_your_api_key"
+```
 
-## Tunnel not starting
+## Existing email login confusion (409)
 
-- Check that the local port is reachable.
-- Try a different port.
+Use email flag form:
 
-## Custom subdomain unavailable
+```bash
+instatunnel auth login -e you@example.com
+```
 
-Subdomains are shared. Pick a unique name or try again later.
+Existing accounts use recovery flow. New accounts use signup flow.
 
-## Webhooks not reaching local app
+## Tunnel starts but URL shows local connection refused
 
-- Confirm your local server is running.
-- Check firewall settings.
-- Use curl locally to verify the endpoint.
+Your local app is not running on the tunneled port.
+
+Example: if command is `instatunnel 8787`, ensure local app is actually listening on `localhost:8787`.
+
+## MCP says Pro/Business required
+
+MCP mode requires paid plan support.
+
+Check plan and retry:
+
+```bash
+instatunnel --stats
+instatunnel 8787 --mcp --transport v2
+```
+
+## Need help
+
+- Docs: https://instatunnel.my/docs/troubleshooting
+- Support: support@instatunnel.my
